@@ -1,0 +1,5 @@
+node_modules
+.bolt
+__pycache__
+vulnerability_fixer_model.keras
+backend\model\vulnerability_fixer_model.keras
