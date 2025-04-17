@@ -6,6 +6,9 @@ import numpy as np
 import tensorflow as tf
 from tensorflow.keras.preprocessing.sequence import pad_sequences
 from flask_cors import CORS
+from git import Repo
+import os
+import tempfile
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
@@ -181,65 +184,95 @@ class VulnerabilityFixer:
 # Initialize the fixer once when the app starts
 fixer = VulnerabilityFixer()
 
+cloned_repos = {}
 
 @app.route('/analyze', methods=['POST'])
-def analyze():
-    """Endpoint to analyze code for vulnerabilities"""
+def analyze_repo():
     try:
         data = request.get_json()
-        code_snippet = data.get('code', '')
+        repo_url = data.get('repo_url', '')
 
-        if not code_snippet:
-            return jsonify({'error': 'No code provided'}), 400
+        if not repo_url:
+            return jsonify({'error': 'No GitHub repository URL provided'}), 400
 
-        vulnerabilities = fixer.analyze_code(code_snippet)
+        # Clone the repo to a temporary directory
+        temp_dir = tempfile.mkdtemp()
+        repo_path = os.path.join(temp_dir, 'repo')
+        Repo.clone_from(repo_url, repo_path)
+
+        # Store the mapping
+        cloned_repos[repo_url] = repo_path
+
+        results = []
+
+        for root, _, files in os.walk(repo_path):
+            for file in files:
+                if file.endswith(('.java', '.js', '.php', '.py')):  # Adjust extensions as needed
+                    file_path = os.path.join(root, file)
+                    with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                        code = f.read()
+
+                    vulnerabilities = fixer.analyze_code(code)
+
+                    if vulnerabilities:
+                        results.append({
+                            'file': os.path.relpath(file_path, repo_path),
+                            'vulnerabilities': vulnerabilities
+                        })
 
         return jsonify({
             'status': 'success',
-            'vulnerabilities': vulnerabilities,
-            'original_code': code_snippet
+            'repository': repo_url,
+            'results': results
         })
 
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-
-@app.route('/generate-patch', methods=['POST'])
-def generate_patch():
-    """Endpoint to generate a patch for vulnerable code"""
+@app.route('/generate_patch', methods=['POST'])
+def generate_patch_repo():
     try:
         data = request.get_json()
-        code_snippet = data.get('code', '')
+        repo_url = data.get('repo_url', '')
 
-        if not code_snippet:
-            return jsonify({'error': 'No code provided'}), 400
+        if not repo_url:
+            return jsonify({'error': 'No GitHub repository URL provided'}), 400
 
-        # First analyze the code
-        vulnerabilities = fixer.analyze_code(code_snippet)
+        if repo_url not in cloned_repos:
+            return jsonify({'error': 'Repository not analyzed yet. Please analyze first.'}), 400
 
-        # If no vulnerabilities found, return early
-        if vulnerabilities[0]['type'] == 'No vulnerabilities detected':
-            return jsonify({
-                'status': 'success',
-                'message': 'No vulnerabilities detected - no patch needed',
-                'original_code': code_snippet,
-                'patch': code_snippet,
-                'vulnerabilities': vulnerabilities
-            })
+        repo_path = cloned_repos[repo_url]
+        patched_results = []
 
-        # Generate the patch
-        patch = fixer.predict_fix(code_snippet)
+        for root, _, files in os.walk(repo_path):
+            for file in files:
+                if file.endswith(('.java', '.js', '.php', '.py')):  # Extend as needed
+                    file_path = os.path.join(root, file)
+                    with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                        code = f.read()
+
+                    vulnerabilities = fixer.analyze_code(code)
+
+                    if vulnerabilities:
+                        patched_code = fixer.predict_fix(code)
+
+                        patched_results.append({
+                            'file': os.path.relpath(file_path, repo_path),
+                            'vulnerabilities': vulnerabilities,
+                            'patched_code': {
+                                'summary': 'Replaced vulnerable code with a safer alternative.',
+                                'code': patched_code
+                            }
+                        })
 
         return jsonify({
             'status': 'success',
-            'original_code': code_snippet,
-            'patch': patch,
-            'vulnerabilities': vulnerabilities
+            'repository': repo_url,
+            'patched_results': patched_results
         })
 
     except Exception as e:
         return jsonify({'error': str(e)}), 500
-
 
 if __name__ == '__main__':
-    app.run(debug=True, port=5000)
+    app.run(debug=True)

@@ -10,21 +10,26 @@ interface Vulnerability {
   severity: 'high' | 'medium' | 'low' | 'none' | string;
 }
 
-interface AnalysisResult {
+interface FileAnalysis {
+  file: string;
   vulnerabilities: Vulnerability[];
 }
 
 interface PatchResult {
-  originalCode: string;
-  patchedCode: string;
+  file: string;
+  patched_code: {
+    code: string;
+    summary: string;
+  };
+  vulnerabilities: Vulnerability[];
 }
 
 const CodeAnalyzer: React.FC = () => {
-  const [code, setCode] = useState('');
+  const [githubUrl, setGithubUrl] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
-  const [patchResult, setPatchResult] = useState<PatchResult | null>(null);
+  const [analysisResult, setAnalysisResult] = useState<FileAnalysis[] | null>(null);
+  const [patchResults, setPatchResults] = useState<PatchResult[] | null>(null);
   const [isAnalyzed, setIsAnalyzed] = useState(false);
 
   const normalizeSeverity = (severity: string) => severity.toLowerCase();
@@ -36,7 +41,7 @@ const CodeAnalyzer: React.FC = () => {
       const response = await fetch('http://localhost:5000/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code }),
+        body: JSON.stringify({ repo_url: githubUrl }),
       });
 
       if (!response.ok) {
@@ -48,12 +53,9 @@ const CodeAnalyzer: React.FC = () => {
         throw new Error('Server did not return JSON response');
       }
 
-      const text = await response.text();
-      if (!text) throw new Error('Server returned empty response');
-
-      const result = JSON.parse(text);
-      if (result.vulnerabilities) {
-        setAnalysisResult({ vulnerabilities: result.vulnerabilities });
+      const result = await response.json();
+      if (result.results) {
+        setAnalysisResult(result.results);
         setIsAnalyzed(true); // Show "Generate Patch" button
       } else {
         throw new Error('Invalid format from server');
@@ -71,37 +73,26 @@ const CodeAnalyzer: React.FC = () => {
     setLoading(true);
     setError(null);
     try {
-      const response = await fetch('http://localhost:5000/generate-patch', {
+      const response = await fetch('http://localhost:5000/generate_patch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code }),
+        body: JSON.stringify({ repo_url: githubUrl }),
       });
 
       if (!response.ok) {
         throw new Error(`Server responded with status: ${response.status}`);
       }
 
-      const contentType = response.headers.get('content-type');
-      if (!contentType || !contentType.includes('application/json')) {
-        throw new Error('Server did not return JSON response');
-      }
-
-      const text = await response.text();
-      if (!text) throw new Error('Server returned empty response');
-
-      const result = JSON.parse(text);
-      setPatchResult({
-        originalCode: result.original_code,
-        patchedCode: result.patch || '',
-      });
-
-      if (result.vulnerabilities) {
-        setAnalysisResult({ vulnerabilities: result.vulnerabilities });
+      const result = await response.json();
+      if (result.patched_results) {
+        setPatchResults(result.patched_results);
+      } else {
+        throw new Error('Invalid format from server');
       }
     } catch (error) {
       console.error('Patch generation failed:', error);
       setError(error instanceof Error ? error.message : 'An unexpected error occurred');
-      setPatchResult(null);
+      setPatchResults(null);
     }
     setLoading(false);
   };
@@ -131,11 +122,12 @@ const CodeAnalyzer: React.FC = () => {
       className="max-w-4xl mx-auto space-y-8"
     >
       <div className="bg-gray-800 rounded-lg p-6 shadow-xl">
-        <textarea
-          value={code}
-          onChange={(e) => setCode(e.target.value)}
-          placeholder="Paste your code here..."
-          className="w-full h-64 p-4 bg-gray-900 text-gray-100 font-mono rounded-lg focus:outline-none focus:ring-2 focus:ring-violet-500"
+        <input
+          type="text"
+          value={githubUrl}
+          onChange={(e) => setGithubUrl(e.target.value)}
+          placeholder="Paste GitHub Repository URL here..."
+          className="w-full p-4 bg-gray-900 text-gray-100 font-mono rounded-lg focus:outline-none focus:ring-2 focus:ring-violet-500"
         />
 
         <div className="flex flex-col gap-4 mt-4">
@@ -187,22 +179,27 @@ const CodeAnalyzer: React.FC = () => {
         >
           <h2 className="text-2xl font-bold mb-4">🧪 Vulnerability Report</h2>
           <div className="space-y-4">
-            {analysisResult.vulnerabilities.map((vuln, index) => (
-              <div key={index} className="bg-gray-900 rounded-lg p-4">
-                <div className="flex items-center gap-2 mb-2">
-                  <span className={`px-3 py-1 rounded-full text-sm ${getSeverityColor(vuln.severity)}`}>
-                    {getSeverityEmoji(vuln.severity)} {normalizeSeverity(vuln.severity).toUpperCase()}
-                  </span>
-                  <span className="font-semibold">{vuln.type}</span>
-                </div>
-                <p className="text-gray-300">{vuln.description}</p>
+            {analysisResult.map((fileAnalysis, index) => (
+              <div key={index}>
+                <h3 className="text-xl font-semibold">{fileAnalysis.file}</h3>
+                {fileAnalysis.vulnerabilities.map((vuln, idx) => (
+                  <div key={idx} className="bg-gray-900 rounded-lg p-4">
+                    <div className="flex items-center gap-2 mb-2">
+                      <span className={`px-3 py-1 rounded-full text-sm ${getSeverityColor(vuln.severity)}`}>
+                        {getSeverityEmoji(vuln.severity)} {normalizeSeverity(vuln.severity).toUpperCase()}
+                      </span>
+                      <span className="font-semibold">{vuln.type}</span>
+                    </div>
+                    <p className="text-gray-300">{vuln.description}</p>
+                  </div>
+                ))}
               </div>
             ))}
           </div>
         </motion.div>
       )}
 
-      {patchResult && (
+      {patchResults && (
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
@@ -210,18 +207,18 @@ const CodeAnalyzer: React.FC = () => {
         >
           <h2 className="text-2xl font-bold mb-4">🧾 Code & Patch Recommendation</h2>
           <div className="space-y-4">
-            <div>
-              <h3 className="text-lg font-semibold mb-2">Original Code:</h3>
-              <SyntaxHighlighter language="java" style={atomOneDark} className="rounded-lg">
-                {patchResult.originalCode}
-              </SyntaxHighlighter>
-            </div>
-            <div>
-              <h3 className="text-lg font-semibold mb-2">Generated Patch:</h3>
-              <SyntaxHighlighter language="java" style={atomOneDark} className="rounded-lg">
-                {patchResult.patchedCode}
-              </SyntaxHighlighter>
-            </div>
+            {patchResults.map((patch, index) => (
+              <div key={index}>
+                <h3 className="text-xl font-semibold">{patch.file}</h3>
+                <div>
+                  <h4 className="text-lg font-semibold mb-2">Patched Code:</h4>
+                  <SyntaxHighlighter language="java" style={atomOneDark} className="rounded-lg">
+                    {patch.patched_code.code}
+                  </SyntaxHighlighter>
+                  <p className="text-gray-300">{patch.patched_code.summary}</p>
+                </div>
+              </div>
+            ))}
           </div>
         </motion.div>
       )}
